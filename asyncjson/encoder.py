@@ -1,4 +1,4 @@
-__all__ = ['encoder', 'JSONEncoder']
+__all__ = ['encoder', 'JSONEncoder', 'ObjType', 'OBJTYPE_STRING', 'OBJTYPE_DICT', 'OBJTYPE_SEQUENCE', 'OBJTYPE_ASYNC_GENERATOR']
 import inspect
 import re
 import types
