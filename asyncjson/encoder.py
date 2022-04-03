@@ -219,9 +219,6 @@ async def encoder(
         await close_encoder(enc)
         return
 
-    if pretty:
-        yield '\n'
-
     stack.append((ittyp, it))
     begun = False
     while stack:
