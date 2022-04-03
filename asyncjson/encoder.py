@@ -1,18 +1,31 @@
-__all__ = ['encode']
+__all__ = ['encoder', 'JSONEncoder']
 import inspect
 import re
 import types
-import json
-from typing import AsyncGenerator, Any, Tuple, List, Union, Generator, Iterator, Iterable, Mapping, \
-    AsyncIterator, AsyncIterable, Callable, Coroutine, Awaitable, Optional
+from typing import (
+    AsyncGenerator,
+    Any,
+    Tuple,
+    Union,
+    Generator,
+    Iterable,
+    Mapping,
+    AsyncIterable,
+    Callable,
+    Awaitable,
+    Optional,
+    Final,
+    Type,
+    Dict
+)
 
-ObjType = int
+ObjType: Final[Type[int]] = int
 
-SENTINEL = object()
-INFINITY = float('inf')
-ESCAPE = re.compile(r'[\x00-\x1f\\"\b\f\n\r\t]')
-ESCAPE_ASCII = re.compile(r'([\\"]|[^\ -~])')
-ESCAPE_DCT = {
+SENTINEL: Final[object] = object()
+INFINITY: Final[float] = float('inf')
+ESCAPE: Final[re.Pattern] = re.compile(r'[\x00-\x1f\\"\b\f\n\r\t]')
+ESCAPE_ASCII: Final[re.Pattern] = re.compile(r'([\\"]|[^\ -~])')
+ESCAPE_DCT: Dict[str, str] = {
     '\\': '\\\\',
     '"': '\\"',
     '\b': '\\b',
@@ -30,8 +43,8 @@ OBJTYPE_SEQUENCE: ObjType = 1
 OBJTYPE_ASYNC_GENERATOR: ObjType = 3
 
 
-def floatstr(o, allow_nan=True,
-             _repr=float.__repr__, _inf=INFINITY, _neginf=-INFINITY):
+async def floatstr(o: float, allow_nan: bool = True,
+                   _repr=float.__repr__, _inf=INFINITY, _neginf=-INFINITY):
     # Check for specials.  Note that this type of test is processor
     # and/or platform-specific, so do tests which don't depend on the
     # internals.
@@ -53,7 +66,7 @@ def floatstr(o, allow_nan=True,
     return text
 
 
-async def py_encode_basestring(s):
+async def py_encode_basestring(s: str):
     """Return a JSON representation of a Python string
 
     """
@@ -62,10 +75,8 @@ async def py_encode_basestring(s):
     return '"' + ESCAPE.sub(replace, s) + '"'
 
 
-async def py_encode_basestring_ascii(s):
-    """Return an ASCII-only JSON representation of a Python string
-
-    """
+async def py_encode_basestring_ascii(s: str):
+    """Return an ASCII-only JSON representation of a Python string"""
     def replace(match):
         s = match.group(0)
         try:
@@ -83,48 +94,113 @@ async def py_encode_basestring_ascii(s):
     return '"' + ESCAPE_ASCII.sub(replace, s) + '"'
 
 
-async def join_dictkey(item_type: ObjType, item: Union[Iterable, AsyncIterable]) -> str:
+async def join_iterable(obj_type: ObjType, obj: Union[Iterable, AsyncIterable]) -> str:
     """Encode a dict key if it's a sequence or generator"""
-    if item_type == OBJTYPE_SEQUENCE:
-        return ''.join(str(x) for x in item)
-    elif item_type == OBJTYPE_ASYNC_GENERATOR:
+    if obj_type == OBJTYPE_SEQUENCE:
+        return ''.join(str(x) for x in obj)
+    elif obj_type == OBJTYPE_ASYNC_GENERATOR:
         k = ""
-        async for x in item:
+        async for x in obj:
             k += str(x)
         return k
     else:
-        raise TypeError(f"Cannot encode dict key of type '{type(item)}', "
-                        f"allowed are Iterable, AsyncIterable") # FIXME: msg
+        raise TypeError(f"Cannot encode dict key of type '{type(obj)}', "
+                        f"allowed are Iterable, AsyncIterable")  # FIXME: msg
 
 
-async def wrong_type(obj: Any) -> str:
-    raise TypeError(f"No encoder for type {type(obj)}, you can specify your own custom encoder "
-                    f"by 'default' parameter")
+class JSONEncoder:
+    encode_dictkey: Optional[
+        Callable[[ObjType, Union[Iterable, AsyncIterable]], Awaitable[str]]
+    ] = None
+    encode_string: Optional[Callable[[str], Awaitable[str]]] = None
+    encode_float: Optional[Callable[[float, bool], Awaitable[str]]] = None
+    encode_int: Optional[Callable[[int], Awaitable[str]]] = None
+
+    def __init__(
+            self,
+            *,
+            pretty: bool = True,
+            sort_keys: bool = False,
+            ensure_ascii: bool = True,
+            allow_nan: bool = True,
+            indent: int = 1,
+            separators: Tuple[str, str] = (', ', ': '),
+            **_
+    ):
+        self.pretty = pretty
+        self.sort_keys = sort_keys
+        self.ensure_ascii = ensure_ascii
+        self.allow_nan = allow_nan
+        self.indent = indent
+        self.item_separator, self.key_separator = separators
+
+        if self.encode_string is None:
+            self.encode_string = py_encode_basestring_ascii if ensure_ascii else py_encode_basestring
+        if self.encode_dictkey is None:
+            self.encode_dictkey = join_iterable
+
+        # Subclasses of int/float may override __repr__, but we still
+        # want to encode them as integers/floats in JSON. One example
+        # within the standard library is IntEnum.
+        if self.encode_float is None:
+            self.encode_float = floatstr
+        if self.encode_int is None:
+            async def encode_int(o) -> str:
+                return int.__repr__(o)
+
+            self.encode_int = encode_int
+
+    async def default(self, obj: Any):
+        raise TypeError(f"No encoder for type {type(obj)}, you can specify your own custom encoder "
+                        f"by 'default' parameter")
+
+    async def encode(self, o: Any) -> str:
+        return ''.join([x async for x in await self.iterencode(o)])
+
+    async def iterencode(self, o: Any) -> AsyncGenerator[str, None]:
+        return encoder(
+            o,
+            pretty=self.pretty,
+            sort_keys=self.sort_keys,
+            allow_nan=self.allow_nan,
+            indent=self.indent,
+            item_separator=self.item_separator,
+            key_separator=self.key_separator,
+            encode_dictkey=self.encode_dictkey,
+            encode_string=self.encode_string,
+            encode_float=self.encode_float,
+            encode_int=self.encode_int,
+            default=self.default
+        )
 
 
-async def encode(
+async def encoder(
         vobj,
         *,
-        pretty: bool = True,
-        sort_keys: bool = False,
-        ensure_ascii: bool = True,
-        allow_nan: bool = True,
-        indent: int = 1,
-        separators: Tuple[str, str] = (', ', ': '),
-        encode_dictkey: Optional[Callable[[ObjType, Union[Iterable, AsyncIterable]], Awaitable[str]]] = None,
-        default: Optional[Callable[[Any], Awaitable[str]]] = None,
+        pretty: bool,
+        sort_keys: bool,
+        allow_nan: bool,
+        indent: int,
+        item_separator: str,
+        key_separator: str,
+        encode_dictkey: Callable[[ObjType, Union[Iterable, AsyncIterable]], Awaitable[str]],
+        encode_string: Callable[[str], Awaitable[str]],
+        encode_float: Callable[[float, bool], Awaitable[str]],
+        encode_int: Callable[[int], Awaitable[str]],
+        default: Callable[[Any], Awaitable[str]],
         **_
 ) -> AsyncGenerator[str, None]:
     stack = []
-    item_separator, key_separator = separators
     indent_space = ' ' * indent
-    string_encoder = py_encode_basestring_ascii if ensure_ascii else py_encode_basestring
-    if encode_dictkey is None:
-        encode_dictkey = join_dictkey
-    if default is None:
-        default = wrong_type
 
-    enc = value_encoder(string_encoder=string_encoder, allow_nan=allow_nan, default=default)
+    async def close_encoder(gen):
+        try:
+            await gen.asend(SENTINEL)
+        except StopAsyncIteration:
+            pass
+
+    enc = value_encoder(allow_nan=allow_nan, encode_string=encode_string, encode_float=encode_float,
+                        encode_int=encode_int, default=default)
     await enc.asend(None)
 
     ittyp, vobj = await enc.asend(vobj)
@@ -216,7 +292,7 @@ async def encode(
                 if ktyp == OBJTYPE_STRING:
                     yield kobj
                 else:
-                    yield await string_encoder(await encode_dictkey(ktyp, kobj))
+                    yield await encode_string(await encode_dictkey(ktyp, kobj))
                 yield key_separator
 
                 # VALUE
@@ -241,18 +317,10 @@ async def encode(
     await close_encoder(enc)
 
 
-async def close_encoder(gen):
-    try:
-        await gen.asend(SENTINEL)
-    except StopAsyncIteration:
-        pass
-
-
 async def value_encoder(
-        string_encoder, allow_nan, default
+        allow_nan, encode_string, encode_float, encode_int, default
 ) -> AsyncGenerator[Tuple[ObjType, Union[str, Iterable, Mapping, Generator, AsyncGenerator]], Any]:
     typ, obj = None, None
-    intstr = int.__repr__
 
     while True:
         item = yield typ, obj
@@ -263,7 +331,7 @@ async def value_encoder(
             item = await item
 
         if isinstance(item, str):
-            typ, obj = OBJTYPE_STRING, await string_encoder(item)
+            typ, obj = OBJTYPE_STRING, await encode_string(item)
         elif item is None:
             typ, obj = OBJTYPE_STRING, 'null'
         elif item is True:
@@ -271,13 +339,9 @@ async def value_encoder(
         elif item is False:
             typ, obj = OBJTYPE_STRING, 'false'
         elif isinstance(item, int):
-            # Subclasses of int/float may override __repr__, but we still
-            # want to encode them as integers/floats in JSON. One example
-            # within the standard library is IntEnum.
-            typ, obj = OBJTYPE_STRING, intstr(item)
+            typ, obj = OBJTYPE_STRING, await encode_int(item)
         elif isinstance(item, float):
-            # see comment above for int
-            typ, obj = OBJTYPE_STRING, floatstr(item, allow_nan)
+            typ, obj = OBJTYPE_STRING, await encode_float(item, allow_nan)
         elif isinstance(item, (list, tuple)):
             typ, obj = OBJTYPE_SEQUENCE, item
         elif isinstance(item, dict):
