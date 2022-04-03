@@ -1,0 +1,30 @@
+language: python
+python:
+  - '3.10'
+  - '3.9'
+  - '3.8'
+  - '3.7'
+  - '3.6'
+
+install:
+  - pip install setuptools tox pytest-cov
+
+script:
+  - ./run_tests.sh
+
+after_success:
+  - "bash <(curl -s https://codecov.io/bash)"
+
+jobs:
+  include:
+  - stage: deploy
+    script: skip
+    after_success: true  # https://travis-ci.community/t/does-skipping-everything-else-in-a-job-skip-deploy/6461/2
+    deploy:
+      provider: pypi
+      edge: true
+      username: "__token__"
+      password: $PYPI_TOKEN
+      on:
+        tags: true
+        branch: master
